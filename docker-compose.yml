@@ -6,7 +6,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        - VITE_RAG_API_URL=${VITE_RAG_API_URL:-http://host.docker.internal:8000/api/v1}
+        - VITE_RAG_API_URL=${VITE_RAG_API_URL}
+
     image: anita-frontend:latest
     container_name: anita-frontend-app
     ports:
