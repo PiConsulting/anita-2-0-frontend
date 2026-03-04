@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - VITE_RAG_API_URL=${VITE_RAG_API_URL:-http://host.docker.internal:8000/api/v1}
+    image: anita-frontend:latest
+    container_name: anita-frontend-app
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
