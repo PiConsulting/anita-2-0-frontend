@@ -24,3 +24,8 @@ scripts
 *.njsproj
 *.sln
 *.sw?
+
+.agents
+.claude
+doc
+doc/*

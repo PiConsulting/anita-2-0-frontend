@@ -2,11 +2,13 @@ import axios from 'axios';
 import type { StartSessionResponse, MessageResponse } from '../types/index';
 
 const RAG_API_URL = import.meta.env.VITE_RAG_API_URL;
+const RAG_TOKEN = import.meta.env.VITE_RAG_TOKEN;
 
 const api = axios.create({
     baseURL: RAG_API_URL,
     headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${RAG_TOKEN}`,
     },
 });
 

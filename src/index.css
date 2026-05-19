@@ -1,25 +1,50 @@
+@import url("https://fonts.googleapis.com/css2?family=PT+Sans:ital,wght@0,400;0,700;1,400;1,700&family=Raleway:ital,wght@0,500;0,800;1,800&display=swap");
 @import "tailwindcss";
 
 @theme {
-  --color-primary-50: #ffffff;
-  --color-primary-100: #fafafa;
-  --color-primary-200: #f5f5f5;
-  --color-primary-300: #e5e5e5;
-  --color-primary-400: #d4d4d4;
-  --color-primary-500: #a3a3a3;
-  --color-primary-600: #737373;
-  --color-primary-700: #525252;
-  --color-primary-800: #262626;
-  --color-primary-900: #171717;
-  --color-primary-950: #0a0a0a;
+  --color-primary-cafe: #5c4738;
+  --color-secondary-yellow: #ffb500;
+  --color-secondary-green: #5bc500;
+  --color-secondary-blue: #418fde;
+  --color-white: #ffffff;
 
-  --font-sans: "Inter", "Outfit", system-ui, sans-serif;
+  --color-sub-red-dark: #76232f;
+  --color-sub-red-medium: #921915;
+  --color-sub-red-light: #c8102e;
+  --color-sub-orange: #ff6a13;
+  --color-sub-yellow-alt: #ef9600;
+  --color-sub-yellow-light: #ffcd00;
+  --color-sub-green-dark: #00ab52;
+  --color-sub-blue-dark: #0076cf;
+  --color-sub-blue-teal: #00a0af;
+  --color-sub-blue-light: #45b5e8;
+  --color-sub-blue-sky: #66bdad;
+  --color-sub-purple: #a10184;
+
+  --font-sans: "PT Sans", sans-serif;
+  --font-brand: "Raleway", sans-serif;
 }
 
 :root {
+  --surface-base: #f4f8fc;
+  --surface-elevated: #ffffff;
+  --surface-muted: #e7eff8;
+  --surface-accent-soft: #eaf3ff;
+  --text-primary: #1f2a37;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --border-soft: #d3dfec;
+  --border-strong: #9db5cf;
+  --interactive-primary: var(--color-secondary-blue);
+  --interactive-primary-hover: #2d79c2;
+  --interactive-contrast: #ffffff;
+  --interactive-success: var(--color-secondary-green);
+  --interactive-danger: var(--color-sub-red-light);
+  --interactive-success-contrast: #163900;
+
   font-family: var(--font-sans);
-  background-color: #ffffff;
-  color: #000000;
+  background-color: var(--surface-base);
+  color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -29,14 +54,30 @@
 /* Proper dark mode configuration */
 
 .dark {
-  background-color: #000000;
-  color: #ffffff;
+  --surface-base: #0d1829;
+  --surface-elevated: #15263e;
+  --surface-muted: #1d3454;
+  --surface-accent-soft: #1e3a5f;
+  --text-primary: #e8eff8;
+  --text-secondary: #c6d6ea;
+  --text-muted: #9cb4cf;
+  --border-soft: #2b476b;
+  --border-strong: #416891;
+  --interactive-primary: #66acef;
+  --interactive-primary-hover: #83bff5;
+  --interactive-contrast: #0d1829;
+  --interactive-success: #7ad829;
+  --interactive-danger: #ff7381;
+  --interactive-success-contrast: #0d1829;
+
+  background-color: var(--surface-base);
+  color: var(--text-primary);
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 
@@ -50,35 +91,43 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #e5e5e5;
+  background: var(--border-soft);
   border-radius: 10px;
 }
 
-.dark ::webkit-scrollbar-thumb {
-  background: #262626;
+.dark ::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #d4d4d4;
+  background: var(--border-strong);
 }
 
-.dark ::webkit-scrollbar-thumb:hover {
-  background: #404040;
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
 }
 
 /* Modern prose refinement */
 .prose {
-  --tw-prose-body: #171717;
-  --tw-prose-headings: #000000;
-  --tw-prose-links: #000000;
-  --tw-prose-bold: #000000;
+  --tw-prose-body: var(--text-primary);
+  --tw-prose-headings: var(--text-primary);
+  --tw-prose-links: var(--color-secondary-blue);
+  --tw-prose-bold: var(--text-primary);
+  --tw-prose-bullets: var(--color-primary-cafe);
+  --tw-prose-hr: var(--border-soft);
 }
 
 .dark .prose {
-  --tw-prose-body: #d4d4d4;
-  --tw-prose-headings: #ffffff;
-  --tw-prose-links: #ffffff;
-  --tw-prose-bold: #ffffff;
-  --tw-prose-pre-bg: #171717;
-  --tw-prose-pre-code: #ffffff;
+  --tw-prose-body: var(--text-primary);
+  --tw-prose-headings: var(--text-primary);
+  --tw-prose-links: var(--color-sub-blue-light);
+  --tw-prose-bold: var(--text-primary);
+  --tw-prose-pre-bg: var(--surface-muted);
+  --tw-prose-pre-code: var(--text-primary);
+}
+
+.brand-slogan {
+  font-family: var(--font-brand);
+  font-style: italic;
+  font-weight: 800;
 }
