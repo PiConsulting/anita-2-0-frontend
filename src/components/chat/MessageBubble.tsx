@@ -32,8 +32,8 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
                 <div className={cn(
                     'w-9 h-9 flex items-center justify-center rounded-full transition-transform hover:scale-105 border',
                     isAssistant
-                        ? 'bg-[var(--interactive-primary)] text-[var(--interactive-contrast)] border-[var(--border-strong)]'
-                        : 'bg-[var(--surface-elevated)] text-[var(--text-primary)] border-[var(--border-soft)]'
+                        ? 'bg-[var(--color-secondary-green)] text-[var(--color-white)] border-[var(--color-secondary-green)]'
+                        : 'bg-[var(--color-secondary-yellow)] text-[var(--color-primary-cafe)] border-[var(--color-secondary-yellow)]'
                 )}>
                     {isAssistant ? <Bot size={18} strokeWidth={2.5} /> : <User size={18} strokeWidth={2.5} />}
                 </div>
@@ -41,7 +41,10 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
 
             <div className="flex-1 overflow-hidden space-y-2">
                 <div className="flex items-center gap-2">
-                    <span className="text-[11px] font-bold tracking-tight text-[var(--text-primary)] uppercase">
+                    <span className={cn(
+                        'text-[11px] font-bold tracking-tight uppercase',
+                        isAssistant ? 'text-[var(--color-secondary-green)]' : 'text-[var(--color-secondary-yellow)]'
+                    )}>
                         {isAssistant ? 'Anita' : 'Cliente'}
                     </span>
                     <span className="text-[10px] font-medium text-[var(--text-muted)]">

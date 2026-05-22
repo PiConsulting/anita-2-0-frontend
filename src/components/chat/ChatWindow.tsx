@@ -25,12 +25,14 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ messages, isLoading }) => {
                 {messages.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in fade-in duration-1000">
                         <div className="relative mb-8">
-                            <div className="w-14 h-14 bg-[var(--surface-accent-soft)] rounded-full transform -rotate-6 absolute -inset-1 opacity-80"></div>
-                            <div className="w-14 h-14 bg-[var(--interactive-primary)] border border-[var(--border-strong)] shadow-[0_10px_24px_rgba(65,143,222,0.3)] rounded-full flex items-center justify-center font-bold text-sm relative z-10 text-[var(--interactive-contrast)]">
-                                BAC
-                            </div>
+                            <div className="w-16 h-16 bg-[var(--surface-accent-soft)] rounded-2xl transform -rotate-6 absolute -inset-1 opacity-80"></div>
+                            <img
+                                src="/Banco_Agrario_de_Colombia_logo_2.png"
+                                alt="Banco Agrario de Colombia"
+                                className="w-16 h-16 rounded-2xl object-contain bg-[var(--surface-base)] border border-[var(--border-strong)] shadow-[0_10px_24px_rgba(65,143,222,0.22)] p-1 relative z-10"
+                            />
                         </div>
-                        <h2 className="text-3xl font-bold tracking-tight mb-3 text-[var(--text-primary)]">Bienvenido a Anita 2.0</h2>
+                        <h2 className="text-3xl font-bold tracking-tight mb-3 text-[var(--color-secondary-green)]">Bienvenido a Anita 2.0</h2>
                         <p className="text-sm font-normal text-[var(--text-muted)] max-w-sm leading-relaxed">
                             Escríbeme tu consulta sobre procesos, productos o soporte de Banca Empresarial y te responderé paso a paso.
                         </p>

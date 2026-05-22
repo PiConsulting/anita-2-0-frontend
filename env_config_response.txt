@@ -1,0 +1,4 @@
+window.__RUNTIME_CONFIG__ = {
+  VITE_RAG_API_URL: "https://ca-dev-orchestrator-anita-2-0.purpledesert-8b2ffb3f.eastus.azurecontainerapps.io/api/v1",
+  VITE_RAG_TOKEN: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3ZmJiMmFjYy1hM2M2LTQzNzUtYjU3MS02ODVhOWRiZTMyM2YiLCJyb2xlIjoiYWRtaW4iLCJleHAiOjc5NTM5MzAyNDQ1fQ.3Rri2VAxkNKAgyHKqfnmEbyCM7KBTXnPE9HZcjixpj4"
+};

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Building2, Moon, Sun } from 'lucide-react';
+import { Moon, Sun } from 'lucide-react';
 import ChatWindow from './components/chat/ChatWindow';
 import InputArea from './components/chat/InputArea';
 import type { Message } from './types/index';
@@ -211,23 +211,18 @@ function App() {
       {/* Header */}
       <header className="flex items-center justify-between px-4 md:px-8 py-4 md:py-5 sticky top-0 z-10 bg-[var(--surface-elevated)]/90 backdrop-blur-md border-b border-[var(--border-soft)] shadow-[0_8px_30px_rgba(65,143,222,0.12)] dark:shadow-none">
         <div className="flex items-center gap-3 text-[var(--text-primary)]">
-          <div className="h-[45px] min-w-[45px] px-2 rounded-2xl bg-[var(--interactive-primary)] text-[var(--interactive-contrast)] flex items-center justify-center shadow-[0_10px_24px_rgba(65,143,222,0.3)]">
-            <span className="text-sm font-bold tracking-wide">BAC</span>
-          </div>
-          <div>
-            <h1 className="font-bold text-lg leading-tight">Anita 2.0</h1>
-            <p className="text-xs text-[var(--text-muted)]">Asistente virtual - Banca Empresarial</p>
+          <img
+            src="/Banco_Agrario_de_Colombia_logo.png"
+            alt="Banco Agrario de Colombia"
+            className="h-[45px] w-auto max-w-[180px] md:max-w-[230px] object-contain"
+          />
+          <div className="flex h-[45px] flex-col justify-center text-[var(--color-primary-cafe)]">
+            <h1 className="text-base font-bold leading-tight">Anita 2.0</h1>
+            <p className="text-base leading-tight">Asistente virtual</p>
           </div>
         </div>
 
         <div className="flex items-center gap-3 md:gap-5">
-          <nav className="hidden md:flex items-center gap-3 text-xs font-bold tracking-wide text-[var(--text-secondary)]">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[var(--surface-accent-soft)] text-[var(--color-primary-cafe)] border border-[var(--border-soft)]">
-              <Building2 size={14} />
-              Banca Empresarial
-            </span>
-          </nav>
-
           <div className="flex items-center gap-2">
             <button
               onClick={toggleTheme}

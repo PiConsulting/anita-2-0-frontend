@@ -1,15 +1,24 @@
 import axios from 'axios';
 import type { StartSessionResponse, MessageResponse } from '../types/index';
 
-const RAG_API_URL = import.meta.env.VITE_RAG_API_URL;
-const RAG_TOKEN = import.meta.env.VITE_RAG_TOKEN;
+const runtimeConfig = window.__RUNTIME_CONFIG__;
+
+const RAG_API_URL = runtimeConfig?.VITE_RAG_API_URL || import.meta.env.VITE_RAG_API_URL;
+const RAG_TOKEN = runtimeConfig?.VITE_RAG_TOKEN || import.meta.env.VITE_RAG_TOKEN;
+
+const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+};
+
+if (RAG_TOKEN?.trim()) {
+    headers['X-API-Key'] = RAG_TOKEN.trim();
+} else {
+    console.warn('VITE_RAG_TOKEN no esta definido; se envia request sin X-API-Key.');
+}
 
 const api = axios.create({
     baseURL: RAG_API_URL,
-    headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${RAG_TOKEN}`,
-    },
+    headers,
 });
 
 export const startChatSession = async (message: string): Promise<StartSessionResponse> => {
