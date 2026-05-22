@@ -1,8 +1,18 @@
+/**
+ * Step values returned by the backend for each bot message:
+ * - terms_pending : T&C acceptance required (shows Accept/Reject buttons)
+ * - id_type       : Requesting document type
+ * - id_number     : Requesting document number
+ * - bot_active    : Normal active conversation
+ * - finished      : Conversation ended
+ * - hand-off      : Transferred to human agent
+ */
 export interface Message {
     id: string;
     role: 'user' | 'assistant';
     content: string;
     timestamp: string;
+    step?: string;
 }
 
 export interface ChatResponse {

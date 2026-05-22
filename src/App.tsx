@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Github, Moon, Sun } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Moon, Sun } from 'lucide-react';
 import ChatWindow from './components/chat/ChatWindow';
 import InputArea from './components/chat/InputArea';
 import type { Message } from './types/index';
@@ -7,6 +7,10 @@ import { startChatSession, sendChatMessage, closeChatSession } from './services/
 
 const CACHE_KEY = 'rag_chat_state';
 const EXPIRY_TIME = 48 * 60 * 60 * 1000; // 48 horas en milisegundos
+
+// Idle timeout: minutes from env var, default 15.
+const IDLE_TIMEOUT_MS =
+  Number(import.meta.env.VITE_SESSION_IDLE_TIMEOUT_MINUTES ?? 15) * 60 * 1000;
 
 interface ChatState {
   sessionId: string;
@@ -45,6 +49,53 @@ function App() {
     return 'light';
   });
 
+  // Derive current step from the last bot message
+  const currentStep = (() => {
+    const lastBotMsg = [...messages].reverse().find(m => m.role === 'assistant');
+    return lastBotMsg?.step ?? null;
+  })();
+
+  // Ref to keep sessionId always current inside async timeouts (avoid stale closures)
+  const sessionIdRef = useRef<string | null>(sessionId);
+  sessionIdRef.current = sessionId;
+
+  // Idle session timer: fires when the last message is from the bot and user is inactive
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // Clear any existing timer on each message change
+    if (idleTimerRef.current) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+
+    const lastMessage = messages[messages.length - 1];
+    const shouldStartTimer =
+      lastMessage &&
+      lastMessage.role === 'assistant' &&
+      sessionIdRef.current !== null;
+
+    if (shouldStartTimer) {
+      console.log(`[App.tsx] Idle timer iniciado: ${IDLE_TIMEOUT_MS / 60000} min`);
+      idleTimerRef.current = setTimeout(async () => {
+        const sid = sessionIdRef.current;
+        console.log('[App.tsx] Sesión expirada por inactividad. Limpiando...');
+        if (sid) {
+          try { await closeChatSession(sid); } catch { /* silent */ }
+        }
+        setSessionId(null);
+        setMessages([]);
+        localStorage.removeItem(CACHE_KEY);
+      }, IDLE_TIMEOUT_MS);
+    }
+
+    return () => {
+      if (idleTimerRef.current) {
+        clearTimeout(idleTimerRef.current);
+      }
+    };
+  }, [messages]);
+
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     localStorage.setItem('theme', theme);
@@ -69,6 +120,15 @@ function App() {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
   };
 
+  const clearSession = async (sid: string | null) => {
+    if (sid) {
+      try { await closeChatSession(sid); } catch { /* silent */ }
+    }
+    setSessionId(null);
+    setMessages([]);
+    localStorage.removeItem(CACHE_KEY);
+  };
+
   const handleSendMessage = async (content: string) => {
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -84,30 +144,41 @@ function App() {
 
     try {
       let responseText = '';
+      let responseStep: string | undefined;
 
       if (!sessionId) {
         const response = await startChatSession(content);
         setSessionId(response.session_id);
         responseText = response.reply;
+        responseStep = response.step;
       } else {
         const response = await sendChatMessage(sessionId, content);
         responseText = response.reply;
+        responseStep = response.step;
 
-        // Si la sesión terminó, limpiamos caché y mandamos a borrar
-        if (response.finished) {
-          console.log('[App.tsx] Sesión finalizada por el backend. Limpiando caché y cerrando sesión remota...');
-          await closeChatSession(sessionId);
-          setSessionId(null);
-          localStorage.removeItem(CACHE_KEY);
+        // Si la sesión terminó (finished o rechazo), limpiar caché y sesión remota
+        if (response.finished || response.step === 'finished') {
+          console.log('[App.tsx] Sesión finalizada por el backend.');
+          const assistantMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content: responseText,
+            step: responseStep,
+            timestamp: new Date().toISOString(),
+          };
+          setMessages(prev => [...prev, assistantMessage]);
+          await clearSession(sessionId);
+          return; // early return para no volver a añadir el mensaje abajo
         }
       }
 
-      console.log('[App.tsx] Respuesta recibida de la API:', responseText);
+      console.log('[App.tsx] Respuesta recibida de la API:', { responseText, responseStep });
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: responseText,
+        step: responseStep,
         timestamp: new Date().toISOString(),
       };
 
@@ -125,47 +196,59 @@ function App() {
     }
   };
 
+  /**
+   * Handles the user's response to the T&C message.
+   * - 'acepto'  → sends the acceptance message normally; the backend continues the flow.
+   * - 'rechazo' → sends the rejection; after the bot replies, the session is cleaned up
+   *               because the backend will return step='finished'.
+   */
+  const handleTermsResponse = (answer: 'acepto' | 'rechazo') => {
+    handleSendMessage(answer);
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-black transition-colors duration-300 selection:bg-black selection:text-white dark:selection:bg-white dark:selection:text-black">
+    <div className="flex flex-col h-screen bg-[var(--surface-base)] text-[var(--text-primary)] transition-colors duration-300 selection:bg-[var(--color-secondary-yellow)] selection:text-[var(--color-primary-cafe)] dark:selection:bg-[var(--interactive-primary)] dark:selection:text-[var(--surface-base)]">
       {/* Header */}
-      <header className="flex items-center justify-between px-8 py-6 sticky top-0 z-10 bg-white/80 dark:bg-black/80 backdrop-blur-md border-b border-transparent dark:border-neutral-900">
-        <div className="flex items-center gap-3 text-black dark:text-white">
-          <div className="w-6 h-6 bg-black dark:bg-white rounded-sm rotate-45 flex items-center justify-center overflow-hidden">
-            <span className="text-white dark:text-black font-bold text-[10px] -rotate-45">A2</span>
+      <header className="flex items-center justify-between px-4 md:px-8 py-4 md:py-5 sticky top-0 z-10 bg-[var(--surface-elevated)]/90 backdrop-blur-md border-b border-[var(--border-soft)] shadow-[0_8px_30px_rgba(65,143,222,0.12)] dark:shadow-none">
+        <div className="flex items-center gap-3 text-[var(--text-primary)]">
+          <img
+            src="/Banco_Agrario_de_Colombia_logo.png"
+            alt="Banco Agrario de Colombia"
+            className="h-[45px] w-auto max-w-[180px] md:max-w-[230px] object-contain"
+          />
+          <div className="flex h-[45px] flex-col justify-center text-[var(--color-primary-cafe)]">
+            <h1 className="text-base font-bold leading-tight">Anita 2.0</h1>
+            <p className="text-base leading-tight">Asistente virtual</p>
           </div>
-          <h1 className="font-extrabold text-lg tracking-tight">Anita 2.0</h1>
         </div>
 
-        <div className="flex items-center gap-6">
-          <nav className="hidden md:flex items-center gap-6 text-xs font-semibold uppercase tracking-widest text-neutral-400 dark:text-neutral-500">
-            <span className="text-black dark:text-white pointer-events-none">Assistant</span>
-            <a href="#" className="hover:text-black dark:hover:text-white transition-colors">Documentation</a>
-          </nav>
-
-          <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3 md:gap-5">
+          <div className="flex items-center gap-2">
             <button
               onClick={toggleTheme}
-              className="p-2 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-900 text-black dark:text-white transition-colors"
-              aria-label="Toggle Theme"
+              className="p-2.5 rounded-xl bg-[var(--surface-muted)] hover:bg-[var(--border-soft)] text-[var(--text-primary)] transition-colors border border-[var(--border-soft)]"
+              aria-label="Cambiar tema"
             >
               {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
             </button>
-            <a
-              href="#"
-              className="text-black dark:text-white hover:opacity-50 transition-opacity"
-              aria-label="GitHub Repository"
-            >
-              <Github size={18} />
-            </a>
           </div>
         </div>
       </header>
 
       {/* Main Chat Area */}
-      <main className="flex-1 flex flex-col overflow-hidden max-w-5xl mx-auto w-full">
+      <main className="flex-1 flex flex-col overflow-hidden max-w-6xl mx-auto w-full">
         <ChatWindow messages={messages} isLoading={isLoading} />
-        <InputArea onSendMessage={handleSendMessage} isLoading={isLoading} />
+        <InputArea
+          onSendMessage={handleSendMessage}
+          isLoading={isLoading}
+          currentStep={currentStep}
+          onTermsResponse={handleTermsResponse}
+        />
       </main>
+
+      <footer className="px-4 py-1.5 text-center text-[10px] text-[var(--text-muted)] border-t border-[var(--border-soft)] bg-[var(--surface-elevated)]/70">
+        Version de desarrollo {__APP_VERSION__}
+      </footer>
     </div>
   );
 }
