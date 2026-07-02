@@ -1,5 +1,9 @@
 import axios from 'axios';
-import type { StartSessionResponse, MessageResponse } from '../types/index';
+import type {
+    StartSessionResponse,
+    MessageResponse,
+    VerifyInactivityResponse,
+} from '../types/index';
 
 const runtimeConfig = window.__RUNTIME_CONFIG__;
 
@@ -43,7 +47,7 @@ export const sendChatMessage = async (sessionId: string, message: string): Promi
     }
 };
 
-export const closeChatSession = async (sessionId: string): Promise<any> => {
+export const closeChatSession = async (sessionId: string): Promise<unknown | null> => {
     try {
         const response = await api.delete(`/chatbot/session/${sessionId}`);
         console.log('[API Response] /chatbot/session (DELETE):', response.data);
@@ -52,6 +56,19 @@ export const closeChatSession = async (sessionId: string): Promise<any> => {
         console.error('Error closing session:', error);
         // Fallamos silenciosamente o lanzamos error según se prefiera; mejor loguear solamente
         return null;
+    }
+};
+
+export const verifySessionInactivity = async (sessionId: string): Promise<VerifyInactivityResponse> => {
+    try {
+        const response = await api.post<VerifyInactivityResponse>('/chatbot/session/inactivity/verify', {
+            session_id: sessionId,
+        });
+        console.log('[API Response] /chatbot/session/inactivity/verify:', response.data);
+        return response.data;
+    } catch (error) {
+        console.error('Error verifying session inactivity:', error);
+        throw error;
     }
 };
 
