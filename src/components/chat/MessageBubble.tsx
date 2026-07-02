@@ -56,16 +56,16 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
                     <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         components={{
-                            a: ({ node, ...props }) => (
+                            a: ({ ...props }) => (
                                 <a {...props} target="_blank" rel="noopener noreferrer" className="text-[var(--color-secondary-blue)] hover:text-[var(--color-sub-blue-dark)] underline break-words" />
                             ),
-                            ul: ({ node, ...props }) => (
+                            ul: ({ ...props }) => (
                                 <ul {...props} className="list-disc list-inside my-4 space-y-2" />
                             ),
-                            ol: ({ node, ...props }) => (
+                            ol: ({ ...props }) => (
                                 <ol {...props} className="list-decimal list-inside my-4 space-y-2" />
                             ),
-                            li: ({ node, ...props }) => (
+                            li: ({ ...props }) => (
                                 <li {...props} className="ml-2" />
                             )
                         }}

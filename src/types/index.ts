@@ -12,8 +12,22 @@ export interface Message {
     role: 'user' | 'assistant';
     content: string;
     timestamp: string;
-    step?: string;
+    step?: ChatStep;
+    options?: Record<string, string>;
+    inactivity_status?: InactivityStatus;
 }
+
+export type InactivityStatus = 'pending' | 'inactivity_warned_1' | 'inactivity_warned_2';
+
+export type ChatStep =
+    | 'terms_pending'
+    | 'id_type'
+    | 'id_number'
+    | 'bot_active'
+    | 'bot_survey'
+    | 'finished'
+    | 'hand-off'
+    | (string & {});
 
 export interface ChatResponse {
     answer: string;
@@ -32,7 +46,10 @@ export interface StartSessionRequest {
 export interface StartSessionResponse {
     session_id: string;
     reply: string;
-    step: string;
+    step: ChatStep;
+    options?: Record<string, string>;
+    finished?: boolean;
+    inactivity_status?: InactivityStatus;
 }
 
 export interface MessageRequest {
@@ -43,6 +60,18 @@ export interface MessageRequest {
 export interface MessageResponse {
     session_id: string;
     reply: string;
-    step: string;
+    step: ChatStep;
+    options?: Record<string, string>;
     finished?: boolean;
+    inactivity_status?: InactivityStatus;
+}
+
+export interface VerifyInactivityResponse {
+    session_id: string;
+    message?: string;
+    reply?: string;
+    options?: Record<string, string>;
+    step?: ChatStep;
+    finished?: boolean;
+    inactivity_status: InactivityStatus;
 }

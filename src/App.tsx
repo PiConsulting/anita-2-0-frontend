@@ -2,8 +2,13 @@ import { useState, useEffect, useRef } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import ChatWindow from './components/chat/ChatWindow';
 import InputArea from './components/chat/InputArea';
-import type { Message } from './types/index';
-import { startChatSession, sendChatMessage, closeChatSession } from './services/api';
+import type { InactivityStatus, Message } from './types/index';
+import {
+  startChatSession,
+  sendChatMessage,
+  closeChatSession,
+  verifySessionInactivity,
+} from './services/api';
 
 const CACHE_KEY = 'rag_chat_state';
 const EXPIRY_TIME = 48 * 60 * 60 * 1000; // 48 horas en milisegundos
@@ -11,6 +16,8 @@ const EXPIRY_TIME = 48 * 60 * 60 * 1000; // 48 horas en milisegundos
 // Idle timeout: minutes from env var, default 15.
 const IDLE_TIMEOUT_MS =
   Number(import.meta.env.VITE_SESSION_IDLE_TIMEOUT_MINUTES ?? 15) * 60 * 1000;
+const INACTIVITY_VERIFY_INTERVAL_MS = 60 * 1000;
+const FINISH_GRACE_PERIOD_MS = 12 * 1000;
 
 interface ChatState {
   sessionId: string;
@@ -42,6 +49,7 @@ function App() {
   const [messages, setMessages] = useState<Message[]>(cachedState?.messages || []);
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(cachedState?.sessionId || null);
+  const [isClosingGracePeriod, setIsClosingGracePeriod] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('theme') as 'light' | 'dark' || 'light';
@@ -55,12 +63,28 @@ function App() {
     return lastBotMsg?.step ?? null;
   })();
 
+  const currentSurveyOptions = (() => {
+    const lastBotMsg = [...messages].reverse().find(m => m.role === 'assistant');
+    return lastBotMsg?.options ?? null;
+  })();
+
   // Ref to keep sessionId always current inside async timeouts (avoid stale closures)
   const sessionIdRef = useRef<string | null>(sessionId);
   sessionIdRef.current = sessionId;
 
   // Idle session timer: fires when the last message is from the bot and user is inactive
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Polling timer that asks backend if inactivity warning should be emitted
+  const inactivityVerifyIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const finishCleanupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastInactivityStatusRef = useRef<InactivityStatus | null>(null);
+
+  const clearInactivityVerifyInterval = () => {
+    if (inactivityVerifyIntervalRef.current) {
+      clearInterval(inactivityVerifyIntervalRef.current);
+      inactivityVerifyIntervalRef.current = null;
+    }
+  };
 
   useEffect(() => {
     // Clear any existing timer on each message change
@@ -97,6 +121,66 @@ function App() {
   }, [messages]);
 
   useEffect(() => {
+    clearInactivityVerifyInterval();
+
+    const lastMessage = messages[messages.length - 1];
+    const shouldVerifyInactivity =
+      Boolean(lastMessage) &&
+      lastMessage?.role === 'assistant' &&
+      sessionIdRef.current !== null &&
+      !isClosingGracePeriod;
+
+    if (!shouldVerifyInactivity) {
+      if (lastMessage?.role === 'user') {
+        lastInactivityStatusRef.current = null;
+      }
+      return;
+    }
+
+    const runVerify = async () => {
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+
+      try {
+        const response = await verifySessionInactivity(sid);
+        const nextStatus = response.inactivity_status;
+        const prevStatus = lastInactivityStatusRef.current;
+
+        if (nextStatus !== prevStatus) {
+          lastInactivityStatusRef.current = nextStatus;
+        }
+
+        const shouldAppendWarningMessage =
+          Boolean(response.reply) &&
+          nextStatus !== 'pending' &&
+          nextStatus !== prevStatus;
+
+        if (shouldAppendWarningMessage) {
+          const assistantMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content: response.reply ?? '',
+            step: response.step ?? 'bot_active',
+            options: response.options,
+            inactivity_status: response.inactivity_status,
+            timestamp: new Date().toISOString(),
+          };
+          setMessages(prev => [...prev, assistantMessage]);
+        }
+      } catch (error) {
+        // Silent to user by requirement: only technical logging.
+        console.error('[App.tsx] verifySessionInactivity failed:', error);
+      }
+    };
+
+    inactivityVerifyIntervalRef.current = setInterval(runVerify, INACTIVITY_VERIFY_INTERVAL_MS);
+
+    return () => {
+      clearInactivityVerifyInterval();
+    };
+  }, [messages, isClosingGracePeriod]);
+
+  useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     localStorage.setItem('theme', theme);
   }, [theme]);
@@ -120,16 +204,13 @@ function App() {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
   };
 
-  const clearSession = async (sid: string | null) => {
-    if (sid) {
-      try { await closeChatSession(sid); } catch { /* silent */ }
-    }
-    setSessionId(null);
-    setMessages([]);
-    localStorage.removeItem(CACHE_KEY);
-  };
-
   const handleSendMessage = async (content: string) => {
+    if (isClosingGracePeriod) {
+      return;
+    }
+
+    lastInactivityStatusRef.current = null;
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
@@ -151,43 +232,64 @@ function App() {
         setSessionId(response.session_id);
         responseText = response.reply;
         responseStep = response.step;
+
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: responseText,
+          step: responseStep,
+          options: response.options,
+          inactivity_status: response.inactivity_status,
+          timestamp: new Date().toISOString(),
+        };
+
+        setMessages(prev => [...prev, assistantMessage]);
       } else {
         const response = await sendChatMessage(sessionId, content);
         responseText = response.reply;
         responseStep = response.step;
 
-        // Si la sesión terminó (finished o rechazo), limpiar caché y sesión remota
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: responseText,
+          step: responseStep,
+          options: response.options,
+          inactivity_status: response.inactivity_status,
+          timestamp: new Date().toISOString(),
+        };
+
+        setMessages(prev => [...prev, assistantMessage]);
+
+        // Si la sesión terminó por respuesta del usuario, mantener UI 12 segundos para lectura.
         if (response.finished || response.step === 'finished') {
-          console.log('[App.tsx] Sesión finalizada por el backend.');
-          const assistantMessage: Message = {
-            id: (Date.now() + 1).toString(),
-            role: 'assistant',
-            content: responseText,
-            step: responseStep,
-            timestamp: new Date().toISOString(),
-          };
-          setMessages(prev => [...prev, assistantMessage]);
-          await clearSession(sessionId);
-          return; // early return para no volver a añadir el mensaje abajo
+          console.log('[App.tsx] Sesión finalizada por el backend. Se mantiene UI 12s.');
+          setIsClosingGracePeriod(true);
+          clearInactivityVerifyInterval();
+
+          try { await closeChatSession(sessionId); } catch { /* silent */ }
+
+          finishCleanupTimerRef.current = setTimeout(() => {
+            setSessionId(null);
+            setMessages([]);
+            setIsClosingGracePeriod(false);
+            lastInactivityStatusRef.current = null;
+            localStorage.removeItem(CACHE_KEY);
+          }, FINISH_GRACE_PERIOD_MS);
+
+          return;
         }
       }
 
       console.log('[App.tsx] Respuesta recibida de la API:', { responseText, responseStep });
-
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: responseText,
-        step: responseStep,
-        timestamp: new Date().toISOString(),
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Lo siento, ocurrió un error inesperado.';
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: error.message || 'Lo siento, ocurrió un error inesperado.',
+        content: message,
         timestamp: new Date().toISOString(),
       };
       setMessages(prev => [...prev, errorMessage]);
@@ -240,8 +342,9 @@ function App() {
         <ChatWindow messages={messages} isLoading={isLoading} />
         <InputArea
           onSendMessage={handleSendMessage}
-          isLoading={isLoading}
+          isLoading={isLoading || isClosingGracePeriod}
           currentStep={currentStep}
+          surveyOptions={currentSurveyOptions}
           onTermsResponse={handleTermsResponse}
         />
       </main>

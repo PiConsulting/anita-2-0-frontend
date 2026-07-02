@@ -7,6 +7,8 @@ interface InputAreaProps {
     isLoading: boolean;
     /** Current conversation step returned by the backend (e.g. 'terms_pending') */
     currentStep: string | null;
+    /** Survey options provided by backend when step is bot_survey */
+    surveyOptions?: Record<string, string> | null;
     /** Called when the user responds to the T&C prompt */
     onTermsResponse: (answer: 'acepto' | 'rechazo') => void;
 }
@@ -15,6 +17,7 @@ const InputArea: React.FC<InputAreaProps> = ({
     onSendMessage,
     isLoading,
     currentStep,
+    surveyOptions,
     onTermsResponse,
 }) => {
     const [input, setInput] = React.useState('');
@@ -51,12 +54,6 @@ const InputArea: React.FC<InputAreaProps> = ({
             textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
         }
     }, [input]);
-
-    useEffect(() => {
-        if (currentStep !== 'id_type') {
-            setSelectedDocumentType('');
-        }
-    }, [currentStep]);
 
     const handleDocumentTypeSubmit = () => {
         if (!selectedDocumentType || isLoading) return;
@@ -170,6 +167,62 @@ const InputArea: React.FC<InputAreaProps> = ({
                             )}
                         </button>
                     </div>
+                </div>
+            </div>
+        );
+    }
+
+    // ── Survey mode (1-10 only) ─────────────────────────────────────────────
+    if (currentStep === 'bot_survey') {
+        const surveyEntries = Object.entries(surveyOptions ?? {})
+            .filter(([key]) => {
+                const value = Number(key);
+                return Number.isInteger(value) && value >= 1 && value <= 10;
+            })
+            .sort((a, b) => Number(a[0]) - Number(b[0]));
+
+        const fallbackEntries: Array<[string, string]> = Array.from(
+            { length: 10 },
+            (_, index) => {
+                const n = (index + 1).toString();
+                return [n, n];
+            }
+        );
+
+        const entriesToRender = surveyEntries.length > 0 ? surveyEntries : fallbackEntries;
+
+        return (
+            <div className="p-6 md:pb-10 bg-[var(--surface-base)]">
+                <div className="max-w-3xl mx-auto flex flex-col gap-4">
+                    <p className="text-center text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest">
+                        Selecciona una calificación del 1 al 10
+                    </p>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                        {entriesToRender.map(([value, label]) => (
+                            <button
+                                key={value}
+                                onClick={() => onSendMessage(value)}
+                                disabled={isLoading}
+                                className={cn(
+                                    'min-h-12 rounded-2xl border border-[var(--border-soft)] px-3 py-2',
+                                    'text-sm font-bold tracking-tight transition-all duration-200',
+                                    'bg-[var(--surface-elevated)] text-[var(--text-primary)]',
+                                    'hover:border-[var(--interactive-primary)] hover:bg-[var(--surface-accent-soft)]',
+                                    'focus:outline-none focus:ring-2 focus:ring-[var(--interactive-primary)] focus:ring-offset-1 focus:ring-offset-[var(--surface-base)]',
+                                    'active:scale-[0.98]',
+                                    'disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100'
+                                )}
+                                title={label}
+                            >
+                                {value}
+                            </button>
+                        ))}
+                    </div>
+
+                    <p className="text-center text-[11px] text-[var(--text-muted)]">
+                        Usa los botones para responder la encuesta.
+                    </p>
                 </div>
             </div>
         );
