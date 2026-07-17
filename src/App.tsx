@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import ChatWindow from './components/chat/ChatWindow';
 import InputArea from './components/chat/InputArea';
@@ -11,7 +11,7 @@ import {
 } from './services/api';
 
 const CACHE_KEY = 'rag_chat_state';
-const EXPIRY_TIME = 48 * 60 * 60 * 1000; // 48 horas en milisegundos
+const EXPIRY_TIME = 6 * 60 * 60 * 1000; // 6 horas en milisegundos
 
 // Idle timeout: minutes from env var, default 15.
 const IDLE_TIMEOUT_MS =
@@ -25,6 +25,15 @@ interface ChatState {
   timestamp: number;
 }
 
+function getLastMessageTimestampMs(messages: Message[]): number | null {
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const lastMessage = messages[messages.length - 1];
+  if (!lastMessage?.timestamp) return null;
+
+  const parsedTs = Date.parse(lastMessage.timestamp);
+  return Number.isNaN(parsedTs) ? null : parsedTs;
+}
+
 function getCachedState(): ChatState | null {
   if (typeof window === 'undefined') return null;
   const cached = localStorage.getItem(CACHE_KEY);
@@ -32,8 +41,11 @@ function getCachedState(): ChatState | null {
 
   try {
     const parsed: ChatState = JSON.parse(cached);
+    const lastMessageTimestamp = getLastMessageTimestampMs(parsed.messages);
+    const referenceTimestamp = lastMessageTimestamp ?? parsed.timestamp;
+
     // Verificar si la sesión ha expirado
-    if (Date.now() - parsed.timestamp < EXPIRY_TIME) {
+    if (Number.isFinite(referenceTimestamp) && Date.now() - referenceTimestamp < EXPIRY_TIME) {
       return parsed;
     } else {
       localStorage.removeItem(CACHE_KEY); // Limpiar si expiró
@@ -85,6 +97,38 @@ function App() {
       inactivityVerifyIntervalRef.current = null;
     }
   };
+
+  const startGracefulConversationCleanup = useCallback(async (
+    sid: string,
+    clearSessionMemoryNow: boolean,
+  ) => {
+    setIsClosingGracePeriod(true);
+    clearInactivityVerifyInterval();
+
+    if (idleTimerRef.current) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+
+    try { await closeChatSession(sid); } catch { /* silent */ }
+
+    if (clearSessionMemoryNow) {
+      setSessionId(null);
+      localStorage.removeItem(CACHE_KEY);
+    }
+
+    if (finishCleanupTimerRef.current) {
+      clearTimeout(finishCleanupTimerRef.current);
+    }
+
+    finishCleanupTimerRef.current = setTimeout(() => {
+      setMessages([]);
+      setSessionId(null);
+      setIsClosingGracePeriod(false);
+      lastInactivityStatusRef.current = null;
+      localStorage.removeItem(CACHE_KEY);
+    }, FINISH_GRACE_PERIOD_MS);
+  }, []);
 
   useEffect(() => {
     // Clear any existing timer on each message change
@@ -167,6 +211,13 @@ function App() {
           };
           setMessages(prev => [...prev, assistantMessage]);
         }
+
+        // Al alcanzar el segundo warning de inactividad se finaliza la conversación.
+        if (nextStatus === 'inactivity_warned_2' && nextStatus !== prevStatus) {
+          console.log('[App.tsx] inactivity_warned_2 detectado. Cerrando sesión y aplicando espera de 12s.');
+          await startGracefulConversationCleanup(sid, true);
+          return;
+        }
       } catch (error) {
         // Silent to user by requirement: only technical logging.
         console.error('[App.tsx] verifySessionInactivity failed:', error);
@@ -178,7 +229,7 @@ function App() {
     return () => {
       clearInactivityVerifyInterval();
     };
-  }, [messages, isClosingGracePeriod]);
+  }, [messages, isClosingGracePeriod, startGracefulConversationCleanup]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -188,10 +239,12 @@ function App() {
   // Efecto para guardar la sesión y mensajes actualizados en caché
   useEffect(() => {
     if (sessionId) {
+      const lastMessageTimestamp = getLastMessageTimestampMs(messages);
       const stateToSave: ChatState = {
         sessionId,
         messages,
-        timestamp: Date.now() // Renueva el tiempo de vida con cada mensaje
+        // Persistimos como referencia el ultimo mensaje real.
+        timestamp: lastMessageTimestamp ?? Date.now()
       };
       localStorage.setItem(CACHE_KEY, JSON.stringify(stateToSave));
 
@@ -264,18 +317,7 @@ function App() {
         // Si la sesión terminó por respuesta del usuario, mantener UI 12 segundos para lectura.
         if (response.finished || response.step === 'finished') {
           console.log('[App.tsx] Sesión finalizada por el backend. Se mantiene UI 12s.');
-          setIsClosingGracePeriod(true);
-          clearInactivityVerifyInterval();
-
-          try { await closeChatSession(sessionId); } catch { /* silent */ }
-
-          finishCleanupTimerRef.current = setTimeout(() => {
-            setSessionId(null);
-            setMessages([]);
-            setIsClosingGracePeriod(false);
-            lastInactivityStatusRef.current = null;
-            localStorage.removeItem(CACHE_KEY);
-          }, FINISH_GRACE_PERIOD_MS);
+          await startGracefulConversationCleanup(sessionId, false);
 
           return;
         }

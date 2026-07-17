@@ -15,9 +15,7 @@ COPY . .
 
 # Argumentos de construcción para inyectar variables de entorno en el build
 ARG VITE_RAG_API_URL
-ARG VITE_RAG_TOKEN
 ENV VITE_RAG_API_URL=$VITE_RAG_API_URL
-ENV VITE_RAG_TOKEN=$VITE_RAG_TOKEN
 
 # Construir la aplicación para producción (se genera la carpeta 'dist')
 RUN npm run build
