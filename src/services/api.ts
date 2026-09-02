@@ -1,9 +1,13 @@
 import axios from 'axios';
+import type { InternalAxiosRequestConfig } from 'axios';
 import type {
+    E2EEPublicKeyResponse,
+    MessageRequest,
     StartSessionResponse,
     MessageResponse,
     VerifyInactivityResponse,
 } from '../types/index';
+import { trackBackendHttpError, trackException } from './telemetry';
 
 const runtimeConfig = window.__RUNTIME_CONFIG__;
 
@@ -25,24 +29,86 @@ const api = axios.create({
     headers,
 });
 
+const requestStartTimes = new WeakMap<InternalAxiosRequestConfig, number>();
+
+const getSafeRequestPath = (config?: InternalAxiosRequestConfig): string => {
+    const rawUrl = config?.url ?? 'unknown';
+
+    try {
+        const url = new URL(rawUrl, config?.baseURL ?? window.location.origin);
+        return url.pathname;
+    } catch {
+        return rawUrl.split('?')[0] || 'unknown';
+    }
+};
+
+api.interceptors.request.use((config) => {
+    requestStartTimes.set(config, Date.now());
+    return config;
+});
+
+api.interceptors.response.use(
+    (response) => response,
+    (error: unknown) => {
+        if (axios.isAxiosError(error)) {
+            const status = error.response?.status;
+
+            if (status && status >= 500) {
+                const config = error.config;
+                const startTime = config ? requestStartTimes.get(config) : undefined;
+                const durationMs = startTime
+                    ? Date.now() - startTime
+                    : undefined;
+
+                trackBackendHttpError({
+                    method: config?.method?.toUpperCase() ?? 'UNKNOWN',
+                    path: getSafeRequestPath(config),
+                    status,
+                    durationMs,
+                    source: 'api.interceptor',
+                });
+            }
+        }
+
+        return Promise.reject(error);
+    }
+);
+
 export const startChatSession = async (message: string): Promise<StartSessionResponse> => {
     try {
         const response = await api.post<StartSessionResponse>('/chatbot/session/start', { message });
-        console.log('[API Response] /chatbot/session/start:', response.data);
         return response.data;
-    } catch (error) {
-        console.error('Error starting chat session:', error);
+    } catch {
         throw new Error('Hubo un error al iniciar la sesión. Por favor, intenta de nuevo.');
     }
 };
 
-export const sendChatMessage = async (sessionId: string, message: string): Promise<MessageResponse> => {
+export const createSessionE2EEKeyPair = async (
+    sessionId: string,
+): Promise<E2EEPublicKeyResponse> => {
     try {
-        const response = await api.post<MessageResponse>('/chatbot/session/message', { session_id: sessionId, message });
-        console.log('[API Response] /chatbot/session/message:', response.data);
+        const response = await api.post<E2EEPublicKeyResponse>(
+            `/chatbot/session/${sessionId}/e2ee/public-key`,
+        );
         return response.data;
-    } catch (error) {
-        console.error('Error sending message:', error);
+    } catch {
+        throw new Error('No fue posible habilitar el cifrado seguro.');
+    }
+};
+
+export const sendChatMessage = async (
+    sessionId: string,
+    message: string,
+    e2ee?: true,
+): Promise<MessageResponse> => {
+    try {
+        const payload: MessageRequest = { session_id: sessionId, message };
+        if (e2ee) {
+            payload.e2ee = true;
+        }
+        const response = await api.post<MessageResponse>('/chatbot/session/message', payload);
+        return response.data;
+    } catch {
         throw new Error('Hubo un error al procesar tu solicitud. Por favor, intenta de nuevo.');
     }
 };
@@ -50,10 +116,12 @@ export const sendChatMessage = async (sessionId: string, message: string): Promi
 export const closeChatSession = async (sessionId: string): Promise<unknown | null> => {
     try {
         const response = await api.delete(`/chatbot/session/${sessionId}`);
-        console.log('[API Response] /chatbot/session (DELETE):', response.data);
         return response.data;
     } catch (error) {
-        console.error('Error closing session:', error);
+        trackException(error, {
+            source: 'api.closeChatSession',
+            path: '/chatbot/session/:sessionId',
+        });
         // Fallamos silenciosamente o lanzamos error según se prefiera; mejor loguear solamente
         return null;
     }
@@ -64,10 +132,12 @@ export const verifySessionInactivity = async (sessionId: string): Promise<Verify
         const response = await api.post<VerifyInactivityResponse>('/chatbot/session/inactivity/verify', {
             session_id: sessionId,
         });
-        console.log('[API Response] /chatbot/session/inactivity/verify:', response.data);
         return response.data;
     } catch (error) {
-        console.error('Error verifying session inactivity:', error);
+        trackException(error, {
+            source: 'api.verifySessionInactivity',
+            path: '/chatbot/session/inactivity/verify',
+        });
         throw error;
     }
 };
