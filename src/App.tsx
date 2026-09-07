@@ -1,14 +1,23 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import ChatWindow from './components/chat/ChatWindow';
 import InputArea from './components/chat/InputArea';
-import type { InactivityStatus, Message } from './types/index';
+import type {
+  E2EEConfig,
+  E2EEStatus,
+  InactivityStatus,
+  Message,
+  SensitiveInputType,
+} from './types/index';
 import {
   startChatSession,
   sendChatMessage,
+  createSessionE2EEKeyPair,
   closeChatSession,
   verifySessionInactivity,
 } from './services/api';
+import { trackErrorTrace, trackException } from './services/telemetry';
+import { encryptE2EEMessage } from './utils/e2ee';
 
 const CACHE_KEY = 'rag_chat_state';
 const EXPIRY_TIME = 48 * 60 * 60 * 1000; // 48 horas en milisegundos
@@ -18,12 +27,26 @@ const IDLE_TIMEOUT_MS =
   Number(import.meta.env.VITE_SESSION_IDLE_TIMEOUT_MINUTES ?? 15) * 60 * 1000;
 const INACTIVITY_VERIFY_INTERVAL_MS = 60 * 1000;
 const FINISH_GRACE_PERIOD_MS = 12 * 1000;
+const INACTIVITY_CLEANUP_DELAY_MS = 30 * 1000;
+const SENSITIVE_MESSAGE_PLACEHOLDER = 'Información privada';
+
+const isSensitiveInputType = (inputType: unknown): inputType is SensitiveInputType =>
+  inputType === 'bv_username' || inputType === 'bv_password';
 
 interface ChatState {
   sessionId: string;
   messages: Message[];
+  e2ee?: E2EEConfig;
   timestamp: number;
 }
+
+const isValidE2EEConfig = (config: E2EEConfig | undefined): config is E2EEConfig =>
+  Boolean(
+    config?.public_key &&
+    config.algorithm === 'RSA-OAEP-SHA256' &&
+    Number.isInteger(config.max_plaintext_bytes) &&
+    config.max_plaintext_bytes > 0,
+  );
 
 function getCachedState(): ChatState | null {
   if (typeof window === 'undefined') return null;
@@ -32,6 +55,9 @@ function getCachedState(): ChatState | null {
 
   try {
     const parsed: ChatState = JSON.parse(cached);
+    if (!isValidE2EEConfig(parsed.e2ee)) {
+      delete parsed.e2ee;
+    }
     // Verificar si la sesión ha expirado
     if (Date.now() - parsed.timestamp < EXPIRY_TIME) {
       return parsed;
@@ -49,7 +75,10 @@ function App() {
   const [messages, setMessages] = useState<Message[]>(cachedState?.messages || []);
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(cachedState?.sessionId || null);
+  const [e2eeConfig, setE2EEConfig] = useState<E2EEConfig | null>(cachedState?.e2ee ?? null);
+  const [e2eeStatus, setE2EEStatus] = useState<E2EEStatus>(cachedState?.e2ee ? 'ready' : 'idle');
   const [isClosingGracePeriod, setIsClosingGracePeriod] = useState(false);
+  const [isInactivityClosing, setIsInactivityClosing] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('theme') as 'light' | 'dark' || 'light';
@@ -68,9 +97,78 @@ function App() {
     return lastBotMsg?.options ?? null;
   })();
 
+  const currentExpectedInputType = (() => {
+    const lastBotMsg = [...messages].reverse().find(m => m.role === 'assistant');
+    if (lastBotMsg?.step === 'bot_active' && isSensitiveInputType(lastBotMsg.input_type)) {
+      return lastBotMsg.input_type;
+    }
+    return null;
+  })();
+
+  const isHandOffStep = currentStep === 'hand-off';
+
   // Ref to keep sessionId always current inside async timeouts (avoid stale closures)
   const sessionIdRef = useRef<string | null>(sessionId);
   sessionIdRef.current = sessionId;
+  const e2eeConfigRef = useRef<E2EEConfig | null>(e2eeConfig);
+  e2eeConfigRef.current = e2eeConfig;
+  const e2eeSessionRef = useRef<string | null>(cachedState?.e2ee ? cachedState.sessionId : null);
+  const e2eeRequestRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
+
+  const initializeE2EE = useCallback((sid: string): Promise<void> => {
+    if (e2eeSessionRef.current === sid && e2eeConfigRef.current) {
+      return Promise.resolve();
+    }
+
+    if (e2eeRequestRef.current?.sessionId === sid) {
+      return e2eeRequestRef.current.promise;
+    }
+
+    setE2EEStatus('loading');
+    const request = createSessionE2EEKeyPair(sid)
+      .then(response => {
+        if (
+          response.session_id !== sid ||
+          !response.public_key ||
+          response.algorithm !== 'RSA-OAEP-SHA256' ||
+          !Number.isInteger(response.max_plaintext_bytes) ||
+          response.max_plaintext_bytes <= 0
+        ) {
+          throw new Error('La configuracion de cifrado recibida no es valida.');
+        }
+
+        if (sessionIdRef.current !== sid) return;
+
+        const config: E2EEConfig = {
+          public_key: response.public_key,
+          algorithm: response.algorithm,
+          max_plaintext_bytes: response.max_plaintext_bytes,
+        };
+        e2eeSessionRef.current = sid;
+        e2eeConfigRef.current = config;
+        setE2EEConfig(config);
+        setE2EEStatus('ready');
+      })
+      .catch(() => {
+        if (sessionIdRef.current === sid) {
+          e2eeSessionRef.current = null;
+          e2eeConfigRef.current = null;
+          setE2EEConfig(null);
+          setE2EEStatus('error');
+          trackErrorTrace('E2EE public key initialization failed', {
+            source: 'App.initializeE2EE',
+          });
+        }
+      })
+      .finally(() => {
+        if (e2eeRequestRef.current?.sessionId === sid) {
+          e2eeRequestRef.current = null;
+        }
+      });
+
+    e2eeRequestRef.current = { sessionId: sid, promise: request };
+    return request;
+  }, []);
 
   // Idle session timer: fires when the last message is from the bot and user is inactive
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -78,6 +176,7 @@ function App() {
   const inactivityVerifyIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const finishCleanupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastInactivityStatusRef = useRef<InactivityStatus | null>(null);
+  const inactivityCleanupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearInactivityVerifyInterval = () => {
     if (inactivityVerifyIntervalRef.current) {
@@ -85,6 +184,25 @@ function App() {
       inactivityVerifyIntervalRef.current = null;
     }
   };
+
+  const clearInactivityCleanupTimer = () => {
+    if (inactivityCleanupTimerRef.current) {
+      clearTimeout(inactivityCleanupTimerRef.current);
+      inactivityCleanupTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    if (e2eeConfig) {
+      e2eeSessionRef.current = sessionId;
+      setE2EEStatus('ready');
+      return;
+    }
+
+    void initializeE2EE(sessionId);
+  }, [sessionId, e2eeConfig, initializeE2EE]);
 
   useEffect(() => {
     // Clear any existing timer on each message change
@@ -97,7 +215,10 @@ function App() {
     const shouldStartTimer =
       lastMessage &&
       lastMessage.role === 'assistant' &&
-      sessionIdRef.current !== null;
+      sessionIdRef.current !== null &&
+      currentStep !== 'hand-off' &&
+      !isClosingGracePeriod &&
+      !isInactivityClosing;
 
     if (shouldStartTimer) {
       console.log(`[App.tsx] Idle timer iniciado: ${IDLE_TIMEOUT_MS / 60000} min`);
@@ -108,7 +229,11 @@ function App() {
           try { await closeChatSession(sid); } catch { /* silent */ }
         }
         setSessionId(null);
+        setE2EEConfig(null);
+        setE2EEStatus('idle');
         setMessages([]);
+        e2eeSessionRef.current = null;
+        e2eeConfigRef.current = null;
         localStorage.removeItem(CACHE_KEY);
       }, IDLE_TIMEOUT_MS);
     }
@@ -118,7 +243,7 @@ function App() {
         clearTimeout(idleTimerRef.current);
       }
     };
-  }, [messages]);
+  }, [messages, currentStep, isClosingGracePeriod, isInactivityClosing]);
 
   useEffect(() => {
     clearInactivityVerifyInterval();
@@ -128,7 +253,9 @@ function App() {
       Boolean(lastMessage) &&
       lastMessage?.role === 'assistant' &&
       sessionIdRef.current !== null &&
-      !isClosingGracePeriod;
+      currentStep !== 'hand-off' &&
+      !isClosingGracePeriod &&
+      !isInactivityClosing;
 
     if (!shouldVerifyInactivity) {
       if (lastMessage?.role === 'user') {
@@ -150,8 +277,9 @@ function App() {
           lastInactivityStatusRef.current = nextStatus;
         }
 
+        const replyText = response.reply || response.message || '';
         const shouldAppendWarningMessage =
-          Boolean(response.reply) &&
+          Boolean(replyText) &&
           nextStatus !== 'pending' &&
           nextStatus !== prevStatus;
 
@@ -159,17 +287,43 @@ function App() {
           const assistantMessage: Message = {
             id: (Date.now() + 1).toString(),
             role: 'assistant',
-            content: response.reply ?? '',
+            content: replyText,
             step: response.step ?? 'bot_active',
+            input_type: response.input_type,
             options: response.options,
             inactivity_status: response.inactivity_status,
             timestamp: new Date().toISOString(),
           };
           setMessages(prev => [...prev, assistantMessage]);
         }
-      } catch (error) {
-        // Silent to user by requirement: only technical logging.
-        console.error('[App.tsx] verifySessionInactivity failed:', error);
+
+        // Terminal close: after the second warning, block input and schedule cleanup.
+        // Runs independently of message append to handle edge cases (empty reply, repeated status).
+        if (nextStatus === 'inactivity_warned_2') {
+          setIsInactivityClosing(true);
+          clearInactivityVerifyInterval();
+          if (idleTimerRef.current) {
+            clearTimeout(idleTimerRef.current);
+            idleTimerRef.current = null;
+          }
+          try { await closeChatSession(sid); } catch { /* silent */ }
+          localStorage.removeItem(CACHE_KEY);
+          inactivityCleanupTimerRef.current = setTimeout(() => {
+            setSessionId(null);
+            setE2EEConfig(null);
+            setE2EEStatus('idle');
+            setMessages([]);
+            e2eeSessionRef.current = null;
+            e2eeConfigRef.current = null;
+            setIsInactivityClosing(false);
+            lastInactivityStatusRef.current = null;
+          }, INACTIVITY_CLEANUP_DELAY_MS);
+          return;
+        }
+      } catch {
+        trackErrorTrace('Session inactivity verification failed', {
+          source: 'App.verifySessionInactivity',
+        });
       }
     };
 
@@ -178,7 +332,7 @@ function App() {
     return () => {
       clearInactivityVerifyInterval();
     };
-  }, [messages, isClosingGracePeriod]);
+  }, [messages, currentStep, isClosingGracePeriod, isInactivityClosing]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -191,6 +345,7 @@ function App() {
       const stateToSave: ChatState = {
         sessionId,
         messages,
+        ...(e2eeConfig ? { e2ee: e2eeConfig } : {}),
         timestamp: Date.now() // Renueva el tiempo de vida con cada mensaje
       };
       localStorage.setItem(CACHE_KEY, JSON.stringify(stateToSave));
@@ -198,30 +353,97 @@ function App() {
       // Limpiar sessionStorage viejo por si acaso existía de pruebas anteriores
       sessionStorage.removeItem('rag_session_id');
     }
-  }, [sessionId, messages]);
+  }, [sessionId, messages, e2eeConfig]);
 
   const toggleTheme = () => {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
   };
 
+  const beginSessionClosing = async (sid: string, reason: 'finished' | 'hand-off') => {
+    console.log(`[App.tsx] Sesión finalizada por ${reason}. Se mantiene UI 12s.`);
+    trackErrorTrace('Chat session closing started', { reason });
+
+    setIsClosingGracePeriod(true);
+    clearInactivityVerifyInterval();
+    lastInactivityStatusRef.current = null;
+
+    if (idleTimerRef.current) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+
+    if (finishCleanupTimerRef.current) {
+      clearTimeout(finishCleanupTimerRef.current);
+      finishCleanupTimerRef.current = null;
+    }
+
+    clearInactivityCleanupTimer();
+    setIsInactivityClosing(false);
+
+    try { await closeChatSession(sid); } catch { /* silent */ }
+
+    finishCleanupTimerRef.current = setTimeout(() => {
+      setSessionId(null);
+      setE2EEConfig(null);
+      setE2EEStatus('idle');
+      setMessages([]);
+      e2eeSessionRef.current = null;
+      e2eeConfigRef.current = null;
+      setIsClosingGracePeriod(false);
+      lastInactivityStatusRef.current = null;
+      localStorage.removeItem(CACHE_KEY);
+    }, FINISH_GRACE_PERIOD_MS);
+  };
+
   const handleSendMessage = async (content: string) => {
-    if (isClosingGracePeriod) {
+    if (isClosingGracePeriod || isHandOffStep || isInactivityClosing) {
       return;
     }
 
     lastInactivityStatusRef.current = null;
+    clearInactivityCleanupTimer();
+
+    const lastBotMsg = [...messages].reverse().find(m => m.role === 'assistant');
+    const sensitiveType = lastBotMsg?.step === 'bot_active' && isSensitiveInputType(lastBotMsg.input_type)
+      ? lastBotMsg.input_type
+      : undefined;
+    const isSensitiveMessage = Boolean(sensitiveType);
+
+    if (isSensitiveMessage && (!sessionId || e2eeStatus !== 'ready' || !e2eeConfig)) {
+      return;
+    }
+
+    setIsLoading(true);
+
+    let outboundMessage = content;
+    if (isSensitiveMessage && e2eeConfig) {
+      try {
+        outboundMessage = await encryptE2EEMessage(content, e2eeConfig);
+      } catch (error: unknown) {
+        const message = error instanceof Error
+          ? error.message
+          : 'No fue posible cifrar la informacion de forma segura.';
+        setMessages(prev => [...prev, {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: message,
+          timestamp: new Date().toISOString(),
+        }]);
+        setIsLoading(false);
+        return;
+      }
+    }
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content,
+      content: isSensitiveMessage ? SENSITIVE_MESSAGE_PLACEHOLDER : content,
+      isSensitive: isSensitiveMessage,
+      sensitiveType,
       timestamp: new Date().toISOString(),
     };
 
     setMessages(prev => [...prev, userMessage]);
-    setIsLoading(true);
-
-    console.log('[App.tsx] Enviando mensaje a la API...', { sessionId, content });
 
     try {
       let responseText = '';
@@ -229,7 +451,9 @@ function App() {
 
       if (!sessionId) {
         const response = await startChatSession(content);
+        sessionIdRef.current = response.session_id;
         setSessionId(response.session_id);
+        void initializeE2EE(response.session_id);
         responseText = response.reply;
         responseStep = response.step;
 
@@ -238,14 +462,24 @@ function App() {
           role: 'assistant',
           content: responseText,
           step: responseStep,
+          input_type: response.input_type,
           options: response.options,
           inactivity_status: response.inactivity_status,
           timestamp: new Date().toISOString(),
         };
 
         setMessages(prev => [...prev, assistantMessage]);
+
+        if (response.finished || response.step === 'finished' || response.step === 'hand-off') {
+          await beginSessionClosing(response.session_id, response.step === 'hand-off' ? 'hand-off' : 'finished');
+          return;
+        }
       } else {
-        const response = await sendChatMessage(sessionId, content);
+        const response = await sendChatMessage(
+          sessionId,
+          outboundMessage,
+          isSensitiveMessage ? true : undefined,
+        );
         responseText = response.reply;
         responseStep = response.step;
 
@@ -254,6 +488,7 @@ function App() {
           role: 'assistant',
           content: responseText,
           step: responseStep,
+          input_type: response.input_type,
           options: response.options,
           inactivity_status: response.inactivity_status,
           timestamp: new Date().toISOString(),
@@ -261,28 +496,15 @@ function App() {
 
         setMessages(prev => [...prev, assistantMessage]);
 
-        // Si la sesión terminó por respuesta del usuario, mantener UI 12 segundos para lectura.
-        if (response.finished || response.step === 'finished') {
-          console.log('[App.tsx] Sesión finalizada por el backend. Se mantiene UI 12s.');
-          setIsClosingGracePeriod(true);
-          clearInactivityVerifyInterval();
-
-          try { await closeChatSession(sessionId); } catch { /* silent */ }
-
-          finishCleanupTimerRef.current = setTimeout(() => {
-            setSessionId(null);
-            setMessages([]);
-            setIsClosingGracePeriod(false);
-            lastInactivityStatusRef.current = null;
-            localStorage.removeItem(CACHE_KEY);
-          }, FINISH_GRACE_PERIOD_MS);
-
+        // Si la sesión terminó, mantener UI 12 segundos para lectura y reutilizar cierre.
+        if (response.finished || response.step === 'finished' || response.step === 'hand-off') {
+          await beginSessionClosing(sessionId, response.step === 'hand-off' ? 'hand-off' : 'finished');
           return;
         }
       }
 
-      console.log('[App.tsx] Respuesta recibida de la API:', { responseText, responseStep });
     } catch (error: unknown) {
+      trackException(error, { source: 'App.handleSendMessage' });
       const message = error instanceof Error
         ? error.message
         : 'Lo siento, ocurrió un error inesperado.';
@@ -342,8 +564,13 @@ function App() {
         <ChatWindow messages={messages} isLoading={isLoading} />
         <InputArea
           onSendMessage={handleSendMessage}
-          isLoading={isLoading || isClosingGracePeriod}
+          isLoading={isLoading || isClosingGracePeriod || isHandOffStep || isInactivityClosing}
           currentStep={currentStep}
+          expectedInputType={currentExpectedInputType}
+          e2eeStatus={e2eeStatus}
+          onRetryE2EE={() => {
+            if (sessionId) void initializeE2EE(sessionId);
+          }}
           surveyOptions={currentSurveyOptions}
           onTermsResponse={handleTermsResponse}
         />
