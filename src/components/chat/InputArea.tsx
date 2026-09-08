@@ -1,12 +1,19 @@
 import React, { useRef, useEffect } from 'react';
-import { ArrowUp, Loader2, CheckCircle2, XCircle } from 'lucide-react';
+import { ArrowUp, Loader2, CheckCircle2, RefreshCw, XCircle } from 'lucide-react';
 import { cn } from '../../utils/cn';
+import type { E2EEStatus, SensitiveInputType } from '../../types/index';
 
 interface InputAreaProps {
     onSendMessage: (message: string) => void;
     isLoading: boolean;
     /** Current conversation step returned by the backend (e.g. 'terms_pending') */
     currentStep: string | null;
+    /** Sensitive input expected by the backend for the next user message */
+    expectedInputType?: SensitiveInputType | null;
+    /** Availability of the public key required for sensitive inputs */
+    e2eeStatus: E2EEStatus;
+    /** Retries public-key creation after an E2EE initialization error */
+    onRetryE2EE: () => void;
     /** Survey options provided by backend when step is bot_survey */
     surveyOptions?: Record<string, string> | null;
     /** Called when the user responds to the T&C prompt */
@@ -17,12 +24,20 @@ const InputArea: React.FC<InputAreaProps> = ({
     onSendMessage,
     isLoading,
     currentStep,
+    expectedInputType,
+    e2eeStatus,
+    onRetryE2EE,
     surveyOptions,
     onTermsResponse,
 }) => {
     const [input, setInput] = React.useState('');
     const [selectedDocumentType, setSelectedDocumentType] = React.useState('');
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const passwordInputRef = useRef<HTMLInputElement>(null);
+    const isPasswordExpected = expectedInputType === 'bv_password';
+    const isSensitiveInput = Boolean(expectedInputType);
+    const isSensitiveInputBlocked = isSensitiveInput && e2eeStatus !== 'ready';
+    const isInputDisabled = isLoading || isSensitiveInputBlocked;
 
     const documentTypeOptions = [
         { value: '1', label: 'Cédula de ciudadanía' },
@@ -34,8 +49,8 @@ const InputArea: React.FC<InputAreaProps> = ({
     ];
 
     const handleSend = () => {
-        if (input.trim() && !isLoading) {
-            onSendMessage(input.trim());
+        if (input.trim() && !isInputDisabled) {
+            onSendMessage(isSensitiveInput ? input : input.trim());
             setInput('');
         }
     };
@@ -49,11 +64,11 @@ const InputArea: React.FC<InputAreaProps> = ({
 
     // Auto-resize textarea
     useEffect(() => {
-        if (textareaRef.current) {
+        if (!isPasswordExpected && textareaRef.current) {
             textareaRef.current.style.height = 'auto';
             textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
         }
-    }, [input]);
+    }, [input, isPasswordExpected]);
 
     const handleDocumentTypeSubmit = () => {
         if (!selectedDocumentType || isLoading) return;
@@ -172,14 +187,57 @@ const InputArea: React.FC<InputAreaProps> = ({
         );
     }
 
-    // ── Survey mode (1-10 only) ─────────────────────────────────────────────
+    // ── Survey mode ────────────────────────────────────────────────────────
     if (currentStep === 'bot_survey') {
         const surveyEntries = Object.entries(surveyOptions ?? {})
             .filter(([key]) => {
                 const value = Number(key);
-                return Number.isInteger(value) && value >= 1 && value <= 10;
+                return Number.isInteger(value) && value >= 0 && value <= 10;
             })
             .sort((a, b) => Number(a[0]) - Number(b[0]));
+
+        // Detect followup mode: few options with non-numeric labels (e.g. "Si"/"No")
+        const isFollowup = surveyEntries.length > 0
+            && surveyEntries.length <= 4
+            && surveyEntries.some(([, label]) => !/^\d+$/.test(label.trim()));
+
+        if (isFollowup) {
+            return (
+                <div className="p-6 md:pb-10 bg-[var(--surface-base)]">
+                    <div className="max-w-3xl mx-auto flex flex-col gap-4">
+                        <div className={cn(
+                            'grid gap-3',
+                            surveyEntries.length === 2 && 'grid-cols-2',
+                            surveyEntries.length === 3 && 'grid-cols-3',
+                            surveyEntries.length === 4 && 'grid-cols-2 sm:grid-cols-4'
+                        )}>
+                            {surveyEntries.map(([key, label]) => (
+                                <button
+                                    key={key}
+                                    onClick={() => onSendMessage(key)}
+                                    disabled={isLoading}
+                                    className={cn(
+                                        'min-h-14 rounded-2xl border border-[var(--border-soft)] px-4 py-3',
+                                        'text-base font-semibold transition-all duration-200',
+                                        'bg-[var(--surface-elevated)] text-[var(--text-primary)]',
+                                        'hover:border-[var(--interactive-primary)] hover:bg-[var(--surface-accent-soft)]',
+                                        'focus:outline-none focus:ring-2 focus:ring-[var(--interactive-primary)] focus:ring-offset-1 focus:ring-offset-[var(--surface-base)]',
+                                        'active:scale-[0.98]',
+                                        'disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100'
+                                    )}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+
+                        <p className="text-center text-[11px] text-[var(--text-muted)]">
+                            Usa los botones para responder la encuesta.
+                        </p>
+                    </div>
+                </div>
+            );
+        }
 
         const fallbackEntries: Array<[string, string]> = Array.from(
             { length: 10 },
@@ -228,6 +286,60 @@ const InputArea: React.FC<InputAreaProps> = ({
         );
     }
 
+    // ── Bot active with options (e.g. "Si"/"No" buttons) ─────────────────────
+    if (currentStep === 'bot_active' && surveyOptions && Object.keys(surveyOptions).length > 0) {
+        const activeEntries = Object.entries(surveyOptions).sort((a, b) => Number(a[0]) - Number(b[0]));
+
+        return (
+            <div className="p-6 md:pb-10 bg-[var(--surface-base)]">
+                <div className="max-w-3xl mx-auto flex flex-col gap-4">
+                    <div className={cn(
+                        'grid gap-3',
+                        activeEntries.length === 2 && 'grid-cols-2',
+                        activeEntries.length === 3 && 'grid-cols-3',
+                        activeEntries.length >= 4 && 'grid-cols-2 sm:grid-cols-4'
+                    )}>
+                        {activeEntries.map(([key, label]) => (
+                            <button
+                                key={key}
+                                onClick={() => onSendMessage(key)}
+                                disabled={isLoading}
+                                className={cn(
+                                    'min-h-14 rounded-2xl border border-[var(--border-soft)] px-4 py-3',
+                                    'text-base font-semibold transition-all duration-200',
+                                    'bg-[var(--surface-elevated)] text-[var(--text-primary)]',
+                                    'hover:border-[var(--interactive-primary)] hover:bg-[var(--surface-accent-soft)]',
+                                    'focus:outline-none focus:ring-2 focus:ring-[var(--interactive-primary)] focus:ring-offset-1 focus:ring-offset-[var(--surface-base)]',
+                                    'active:scale-[0.98]',
+                                    'disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100'
+                                )}
+                            >
+                                {label}
+                            </button>
+                        ))}
+                    </div>
+
+                    <p className="text-center text-[11px] text-[var(--text-muted)]">
+                        Usa los botones para responder.
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
+    // ── Human hand-off mode ─────────────────────────────────────────────────
+    if (currentStep === 'hand-off') {
+        return (
+            <div className="p-6 md:pb-10 bg-[var(--surface-base)]">
+                <div className="max-w-3xl mx-auto rounded-2xl border border-[var(--border-soft)] bg-[var(--surface-elevated)] px-5 py-4 text-center">
+                    <p className="text-sm font-semibold text-[var(--text-primary)]">
+                        La conversacion fue transferida. El chat se cerrara automaticamente en unos segundos.
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
     // ── Normal textarea mode ──────────────────────────────────────────────────
     return (
         <div className="p-6 md:pb-10 bg-[var(--surface-base)]">
@@ -237,36 +349,72 @@ const InputArea: React.FC<InputAreaProps> = ({
                     "focus-within:border-[var(--border-strong)] focus-within:shadow-[0_0_0_4px_rgba(65,143,222,0.18)]",
                     "bg-[var(--surface-elevated)]"
                 )}>
-                    <textarea
-                        ref={textareaRef}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        placeholder="Pregunta a Anita..."
-                        disabled={isLoading}
-                        rows={1}
-                        className={cn(
-                            'w-full resize-none bg-transparent py-4 pl-5 pr-14 text-sm font-medium focus:outline-none',
-                            'placeholder:text-[var(--text-muted)] text-[var(--text-primary)]',
-                            'disabled:opacity-50'
-                        )}
-                    />
+                    {isPasswordExpected ? (
+                        <input
+                            ref={passwordInputRef}
+                            type="password"
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder="Ingresa la informacion solicitada..."
+                            disabled={isInputDisabled}
+                            autoComplete="off"
+                            className={cn(
+                                'w-full bg-transparent py-4 pl-5 pr-14 text-sm font-medium focus:outline-none',
+                                'placeholder:text-[var(--text-muted)] text-[var(--text-primary)]',
+                                'disabled:opacity-50'
+                            )}
+                        />
+                    ) : (
+                        <textarea
+                            ref={textareaRef}
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder="Pregunta a Anita..."
+                            disabled={isInputDisabled}
+                            rows={1}
+                            className={cn(
+                                'w-full resize-none bg-transparent py-4 pl-5 pr-14 text-sm font-medium focus:outline-none',
+                                'placeholder:text-[var(--text-muted)] text-[var(--text-primary)]',
+                                'disabled:opacity-50'
+                            )}
+                        />
+                    )}
                     <button
                         onClick={handleSend}
-                        disabled={!input.trim() || isLoading}
+                        disabled={!input.trim() || isInputDisabled}
                         className={cn(
                             'absolute right-3 bottom-3 p-2 rounded-xl transition-all duration-200',
                             'bg-[var(--interactive-primary)] text-[var(--interactive-contrast)] hover:bg-[var(--interactive-primary-hover)] active:scale-95',
                             'disabled:bg-[var(--surface-muted)] disabled:text-[var(--text-muted)] disabled:cursor-not-allowed disabled:active:scale-100'
                         )}
                     >
-                        {isLoading ? (
+                        {isLoading || (isSensitiveInput && e2eeStatus === 'loading') ? (
                             <Loader2 size={16} className="animate-spin" />
                         ) : (
                             <ArrowUp size={16} strokeWidth={3} />
                         )}
                     </button>
                 </div>
+                {isSensitiveInput && e2eeStatus === 'loading' && (
+                    <p className="text-center text-xs text-[var(--text-muted)]" role="status">
+                        Preparando conexion segura...
+                    </p>
+                )}
+                {isSensitiveInput && e2eeStatus === 'error' && (
+                    <div className="flex items-center justify-center gap-2 text-xs text-[var(--interactive-danger)]" role="alert">
+                        <span>No fue posible habilitar el cifrado seguro.</span>
+                        <button
+                            type="button"
+                            onClick={onRetryE2EE}
+                            className="inline-flex items-center gap-1 font-bold text-[var(--interactive-primary)] hover:underline"
+                        >
+                            <RefreshCw size={13} />
+                            Reintentar
+                        </button>
+                    </div>
+                )}
                 <div className="flex justify-center gap-3 text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-[0.2em] px-2">
                     <span>Seguro</span>
                     <span>•</span>
