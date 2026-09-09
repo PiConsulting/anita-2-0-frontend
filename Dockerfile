@@ -1,5 +1,5 @@
 # Etapa 1: Build de la aplicación con Node
-FROM node:22-alpine AS build
+FROM crdevanita20eastus-gef0dfe9gvc9c6eh.azurecr.io/node:22-alpine AS build
 
 WORKDIR /app
 
