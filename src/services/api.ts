@@ -16,6 +16,7 @@ const RAG_TOKEN = runtimeConfig?.VITE_RAG_TOKEN || import.meta.env.VITE_RAG_TOKE
 
 const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    'Anita-Origin': 'web_channel',
 };
 
 if (RAG_TOKEN?.trim()) {
